@@ -114,7 +114,7 @@ async def lifespan(app: FastAPI):
     await client.aclose()
 
 
-app = FastAPI(title="Movie Recommendation API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="NextWatch API", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://localhost:3000"],

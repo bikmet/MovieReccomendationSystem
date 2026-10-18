@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { formatTitle } from "./format";
 
-export default function PosterCard({ movie, poster, picked, onToggle, rank, disabled }) {
+export default function PosterCard({ movie, poster, picked, onToggle, rank, disabled, enter, index = 0 }) {
   const { name, year } = formatTitle(movie.title);
   const [broken, setBroken] = useState(false); // poster URL failed to load -> use the placeholder
 
   return (
-    <li className="card">
+    <li className={`card${enter ? " enter" : ""}${picked ? " picked" : ""}`} style={{ "--i": Math.min(index, 12) }}>
       <div className="art">
         {poster && !broken ? (
           <img src={poster} alt={`${name} poster`} loading="lazy" onError={() => setBroken(true)} />
@@ -23,8 +23,9 @@ export default function PosterCard({ movie, poster, picked, onToggle, rank, disa
           aria-label={picked ? `Remove ${name} from your picks` : `Add ${name} to your picks`}
           onClick={() => onToggle(movie)}
           disabled={disabled && !picked}
+          title={disabled && !picked ? "You can pick up to 10 movies" : undefined}
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
+          <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
             <path d={picked ? "M5 13l4 4L19 7" : "M12 5v14M5 12h14"} />
           </svg>
         </button>

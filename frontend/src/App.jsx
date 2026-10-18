@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getHome, getPosters, recommendForNewUser, recommendForUser, searchMovies } from "./api";
+import Nav from "./Nav";
 import PosterCard from "./PosterCard";
-import Rail from "./Rail";
+import Rail, { SkeletonRail } from "./Rail";
 
 const MAX_PICKS = 10;
+
+function scrollToId(id) {
+  const el = document.getElementById(id);
+  if (!el || !el.scrollIntoView) return;
+  const calm = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  el.scrollIntoView({ behavior: calm ? "auto" : "smooth", block: "start" });
+}
 
 export default function App() {
   const [home, setHome] = useState(null); // { rows: [{ title, movies }] }
@@ -23,7 +31,6 @@ export default function App() {
   const [postersOn, setPostersOn] = useState(true);
   const asked = useRef(new Set()); // movieIds whose poster we've already requested
 
-  // Home page rows load once on startup.
   const loadHome = useCallback(async () => {
     setHomeError("");
     try {
@@ -88,6 +95,14 @@ export default function App() {
     };
   }, [query]);
 
+  // When recommendations arrive, glide down to them.
+  useEffect(() => {
+    if (recs) requestAnimationFrame(() => scrollToId("recs"));
+  }, [recs]);
+  useEffect(() => {
+    if (userRecs) requestAnimationFrame(() => scrollToId("user-recs"));
+  }, [userRecs]);
+
   const isPicked = (movie) => picked.some((p) => p.movieId === movie.movieId);
 
   function togglePick(movie) {
@@ -146,115 +161,129 @@ export default function App() {
   const q = query.trim();
 
   return (
-    <div className="app">
-      <section className="hero">
-        <h1>Next watch</h1>
-        <p>Add movies you love with the + button, then get recommendations picked for your taste.</p>
-        <input
-          className="search"
-          type="search"
-          aria-label="Search for a movie"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search for a movie you like, like “matrix” or “toy story”"
-          autoComplete="off"
-        />
+    <>
+      <Nav query={query} setQuery={setQuery} pickCount={picked.length} onPicks={() => scrollToId("picks")} />
+
+      <div className="app" id="top">
+        {!q && (
+          <section className="hero">
+            <div className="hero-copy">
+              <h1>
+                What should you watch <em>next</em>?
+              </h1>
+              <p className="lede">Tell us a few movies you love and we'll find the ones you haven't seen yet.</p>
+              <ol className="steps">
+                <li><span>1</span>Search in the bar above</li>
+                <li><span>2</span>Tap + on the movies you like</li>
+                <li><span>3</span>Get your recommendations</li>
+              </ol>
+            </div>
+          </section>
+        )}
         {!postersOn && (
           <p className="status">Posters are off. Add TMDB_API_KEY to your .env file to show them.</p>
         )}
-      </section>
 
-      {q &&
-        (searching && results.length === 0 ? (
-          <p className="status">Searching…</p>
-        ) : results.length === 0 ? (
-          <p className="status">No movies match “{q}”.</p>
-        ) : (
-          <Rail title={`Results for “${q}”`}>{results.map((m) => card(m))}</Rail>
-        ))}
-
-      {picked.length > 0 ? (
-        <Rail
-          title={
-            <>
-              Your picks{" "}
-              <span className="count">
-                {picked.length} of {MAX_PICKS}
-              </span>
-            </>
-          }
-          action={
-            <button className="go" onClick={getRecommendations} disabled={loading}>
-              {loading ? "Finding movies…" : "Get recommendations"}
-            </button>
-          }
-        >
-          {picked.map((m) => card(m))}
-        </Rail>
-      ) : (
-        !q && <p className="status">Your picks will show up here. Add 3 to 5 movies for the best results.</p>
-      )}
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
-
-      {recs && <Rail title="Recommended for you">{recs.map((m, i) => card(m, { rank: i + 1 }))}</Rail>}
-
-      <div className="browse">
-        {homeError ? (
-          <p className="error" role="alert">
-            {homeError} <button className="link" onClick={loadHome}>Try again</button>
-          </p>
-        ) : !home ? (
-          <p className="status">Loading movies…</p>
-        ) : (
-          home.rows.map((row) => (
-            <Rail key={row.title} title={row.title}>
-              {row.movies.map((m) => card(m))}
+        {q &&
+          (searching && results.length === 0 ? (
+            <p className="status">Searching…</p>
+          ) : results.length === 0 ? (
+            <p className="status">No movies match “{q}”.</p>
+          ) : (
+            <Rail title={`Results for “${q}”`}>
+              {results.map((m, i) => card(m, { enter: true, index: i }))}
             </Rail>
-          ))
+          ))}
+
+        {picked.length > 0 ? (
+          <Rail
+            id="picks"
+            title={
+              <>
+                Your picks <span className="count">{picked.length} of {MAX_PICKS}</span>
+              </>
+            }
+            action={
+              <button className={`go${loading ? " busy" : ""}`} onClick={getRecommendations} disabled={loading}>
+                {loading ? "Finding movies…" : "Get recommendations"}
+              </button>
+            }
+          >
+            {picked.map((m) => card(m, { enter: true }))}
+          </Rail>
+        ) : (
+          !q && <p className="status">Your picks will show up here. Add 3 to 5 movies for the best results.</p>
+        )}
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+
+        {recs && (
+          <Rail id="recs" title="Recommended for you">
+            {recs.map((m, i) => card(m, { rank: i + 1, enter: true, index: i }))}
+          </Rail>
+        )}
+
+        <div className="browse">
+          {homeError ? (
+            <p className="error" role="alert">
+              {homeError} <button className="link" onClick={loadHome}>Try again</button>
+            </p>
+          ) : !home ? (
+            <>
+              <SkeletonRail />
+              <SkeletonRail />
+              <SkeletonRail />
+            </>
+          ) : (
+            home.rows.map((row) => (
+              <Rail key={row.title} title={row.title}>
+                {row.movies.map((m) => card(m))}
+              </Rail>
+            ))
+          )}
+        </div>
+
+        <section className="user">
+          <h2>Already have a user ID?</h2>
+          <p className="status">We'll use what that user rated highly in the dataset. Unknown IDs get popular movies.</p>
+          <div className="inline">
+            <input
+              aria-label="User ID"
+              inputMode="numeric"
+              value={userId}
+              onChange={(e) => setUserId(e.target.value)}
+              placeholder="User ID, for example 1"
+            />
+            <button
+              className={`go${userLoading ? " busy" : ""}`}
+              onClick={getUserRecommendations}
+              disabled={!/^\d+$/.test(userId.trim()) || userLoading}
+            >
+              {userLoading ? "Finding movies…" : "Show recommendations"}
+            </button>
+          </div>
+          {userError && (
+            <p className="error" role="alert">
+              {userError}
+            </p>
+          )}
+          {userRecs && (
+            <>
+              {userRecs.note && <p className="note">{userRecs.note}</p>}
+              <Rail id="user-recs" title="Picked from your ratings">
+                {userRecs.movies.map((m, i) => card(m, { rank: i + 1, enter: true, index: i }))}
+              </Rail>
+            </>
+          )}
+        </section>
+
+        {postersOn && (
+          <footer>This product uses the TMDB API but is not endorsed or certified by TMDB.</footer>
         )}
       </div>
-
-      <section className="user">
-        <h2>Already have a user ID?</h2>
-        <p className="status">We'll use what that user rated highly in the dataset. Unknown IDs get popular movies.</p>
-        <div className="inline">
-          <input
-            aria-label="User ID"
-            inputMode="numeric"
-            value={userId}
-            onChange={(e) => setUserId(e.target.value)}
-            placeholder="User ID, for example 1"
-          />
-          <button
-            className="go"
-            onClick={getUserRecommendations}
-            disabled={!/^\d+$/.test(userId.trim()) || userLoading}
-          >
-            {userLoading ? "Finding movies…" : "Show recommendations"}
-          </button>
-        </div>
-        {userError && (
-          <p className="error" role="alert">
-            {userError}
-          </p>
-        )}
-        {userRecs && (
-          <>
-            {userRecs.note && <p className="note">{userRecs.note}</p>}
-            <Rail title="Picked from your ratings">
-              {userRecs.movies.map((m, i) => card(m, { rank: i + 1 }))}
-            </Rail>
-          </>
-        )}
-      </section>
-
-      {postersOn && (
-        <footer>This product uses the TMDB API but is not endorsed or certified by TMDB.</footer>
-      )}
-    </div>
+    </>
   );
 }
