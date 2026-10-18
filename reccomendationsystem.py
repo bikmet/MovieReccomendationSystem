@@ -1,10 +1,30 @@
+"""
+Movie recommendation backend: hybrid recommender (no LightFM needed).
+Dependencies: pandas, numpy, scipy, scikit-learn, implicit.
+
+Pipeline
+  1. Load movies / ratings / tags.
+  2. Merge all tags that share a movieId into one text field.
+  3. Put the merged tags into the ratings dataset (ratings + movies + tags).
+  4. Feature engineering: genres (multi-hot) + tags (TF-IDF) -> item feature vectors.
+  5. Two models, blended:
+       - Collaborative: ALS matrix factorization (implicit library) on users' high ratings
+       - Content-based: user taste profile = average feature vector of the
+         movies they rated highly, scored by cosine similarity to every movie
+  6. recommend(user_id) -> top-N movies the user has not rated yet.
+
+Usage
+  python reccomendationsystem.py
+  from reccomendationsystem import recommend_movies
+  recommend_movies(user_id=1, n=10)
+"""
+
 import os
 import pickle
 
 # implicit's ALS runs its own threads; keep BLAS single-threaded (recommended by the library)
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
-
 
 import numpy as np
 import pandas as pd
@@ -85,14 +105,14 @@ def _zscore_rows(x):
 # --------------------------------------------------------------------------- #
 class MovieRecommender:
     def __init__(self, factors=16, reg=0.05, confidence=10.0, iterations=15, alpha=0.9):
-            """ALS settings: factors / reg / confidence / iterations.
-            alpha = weight of collaborative score (1-alpha goes to content score).
-            (factors=16 beat 32 and 64 across several random splits on MovieLens-small.)"""
-            self.factors = factors
-            self.reg = reg
-            self.confidence = confidence
-            self.iterations = iterations
-            self.alpha = alpha
+        """ALS settings: factors / reg / confidence / iterations.
+        alpha = weight of collaborative score (1-alpha goes to content score).
+        (factors=16 beat 32 and 64 across several random splits on MovieLens-small.)"""
+        self.factors = factors
+        self.reg = reg
+        self.confidence = confidence
+        self.iterations = iterations
+        self.alpha = alpha
 
     # ---- training ---------------------------------------------------------
     def fit(self, movies, ratings, tags, evaluate=True):
@@ -139,7 +159,7 @@ class MovieRecommender:
         if mode == "cf":
             return cf
         if mode == "content":
-           return content
+            return content
         return alpha * cf + (1 - alpha) * content
 
     # ---- evaluation (random 20% holdout of each user's liked movies) ------
@@ -152,12 +172,12 @@ class MovieRecommender:
         T = sparse.csr_matrix((np.ones(is_test.sum(), np.float32), (L.row[is_test], L.col[is_test])), shape=L.shape)
         L_train = (self.L - T).tocsr(); L_train.eliminate_zeros()
         A_train = (self.A - T).tocsr(); A_train.eliminate_zeros()
-    
+
         self._train(L_train)
         svd = TruncatedSVD(n_components=50, random_state=RANDOM_STATE)   # baseline for comparison
         self._svd_U, self._svd_V = svd.fit_transform(L_train), svd.components_
         users = np.where(np.asarray(T.sum(axis=1)).ravel() > 0)[0]
-    
+
         results = {}
         modes = {"popularity": ("popularity", None), "collaborative (SVD)": ("svd", None),
                  "collaborative (ALS)": ("cf", None),
@@ -196,6 +216,16 @@ class MovieRecommender:
         out["score"] = scores
         return out
 
+    def search(self, query, limit=20):
+        """Movies whose title contains `query` (case-insensitive), most popular first.
+        Returns DataFrame(movieId, title, genres)."""
+        mask = self.titles["title"].str.contains(query.strip(), case=False, regex=False)
+        found = self.titles[mask]
+        if found.empty:
+            return found.reset_index()
+        pop = np.array([self.pop[self.movie_index[m]] for m in found.index])
+        return found.iloc[np.argsort(-pop)[:limit]].reset_index()
+
     def save(self, path=MODEL_PATH):
         with open(path, "wb") as f:
             pickle.dump(self, f)
@@ -212,7 +242,7 @@ def recommend_movies(user_id, n=10, model_path=MODEL_PATH):
 
 
 def main():
-    movies, ratings, tags = load_data("dataset")
+    movies, ratings, tags = load_data()
     build_ratings_dataset(movies, ratings, tags).to_csv(MERGED_CSV, index=False)
     rec = MovieRecommender().fit(movies, ratings, tags)
     print("Hold-out results:")
