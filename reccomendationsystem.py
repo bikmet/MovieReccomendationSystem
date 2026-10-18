@@ -1,8 +1,14 @@
 import os
 import pickle
 
+# implicit's ALS runs its own threads; keep BLAS single-threaded (recommended by the library)
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
+
 import numpy as np
 import pandas as pd
+from implicit.als import AlternatingLeastSquares
 from scipy import sparse
 from sklearn.decomposition import TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -78,10 +84,15 @@ def _zscore_rows(x):
 # 5. Model
 # --------------------------------------------------------------------------- #
 class MovieRecommender:
-    def __init__(self, n_components=50, alpha=0.9):
-        """alpha = weight of collaborative score (1-alpha goes to content score)."""
-        self.n_components = n_components
-        self.alpha = alpha
+    def __init__(self, factors=16, reg=0.05, confidence=10.0, iterations=15, alpha=0.9):
+            """ALS settings: factors / reg / confidence / iterations.
+            alpha = weight of collaborative score (1-alpha goes to content score).
+            (factors=16 beat 32 and 64 across several random splits on MovieLens-small.)"""
+            self.factors = factors
+            self.reg = reg
+            self.confidence = confidence
+            self.iterations = iterations
+            self.alpha = alpha
 
     # ---- training ---------------------------------------------------------
     def fit(self, movies, ratings, tags, evaluate=True):
@@ -106,10 +117,12 @@ class MovieRecommender:
         return self
 
     def _train(self, L):
-        k = min(self.n_components, min(L.shape) - 1)
-        self.svd = TruncatedSVD(n_components=k, random_state=RANDOM_STATE)
-        self.U = self.svd.fit_transform(L)                 # user factors
-        self.V = self.svd.components_                      # item factors
+        als = AlternatingLeastSquares(
+            factors=self.factors, regularization=self.reg, alpha=self.confidence,
+            iterations=self.iterations, random_state=RANDOM_STATE, use_gpu=False)
+        als.fit(L, show_progress=False)                    # L: users x movies
+        self.U = np.asarray(als.user_factors)              # user factors
+        self.V = np.asarray(als.item_factors).T            # movie factors
         self.P = normalize(L @ self.F)                     # user taste profiles
         self.pop = np.asarray(L.sum(axis=0)).ravel()       # popularity
         self._L, self._A = L, None
@@ -119,12 +132,14 @@ class MovieRecommender:
         alpha = self.alpha if alpha is None else alpha
         if mode == "popularity":
             return np.tile(self.pop, (len(rows), 1)).astype(np.float64)
+        if mode == "svd":                                   # comparison baseline (eval only)
+            return _zscore_rows(self._svd_U[rows] @ self._svd_V)
         cf = _zscore_rows(self.U[rows] @ self.V)
         content = _zscore_rows((self.P[rows] @ self.F.T).toarray())
         if mode == "cf":
             return cf
         if mode == "content":
-            return content
+           return content
         return alpha * cf + (1 - alpha) * content
 
     # ---- evaluation (random 20% holdout of each user's liked movies) ------
@@ -137,12 +152,15 @@ class MovieRecommender:
         T = sparse.csr_matrix((np.ones(is_test.sum(), np.float32), (L.row[is_test], L.col[is_test])), shape=L.shape)
         L_train = (self.L - T).tocsr(); L_train.eliminate_zeros()
         A_train = (self.A - T).tocsr(); A_train.eliminate_zeros()
-
+    
         self._train(L_train)
+        svd = TruncatedSVD(n_components=50, random_state=RANDOM_STATE)   # baseline for comparison
+        self._svd_U, self._svd_V = svd.fit_transform(L_train), svd.components_
         users = np.where(np.asarray(T.sum(axis=1)).ravel() > 0)[0]
-
+    
         results = {}
-        modes = {"popularity": ("popularity", None), "collaborative": ("cf", None),
+        modes = {"popularity": ("popularity", None), "collaborative (SVD)": ("svd", None),
+                 "collaborative (ALS)": ("cf", None),
                  "content": ("content", None)}
         for a in (0.3, 0.5, 0.7, 0.9):
             modes[f"hybrid a={a}"] = ("hybrid", a)
@@ -158,6 +176,7 @@ class MovieRecommender:
                 prec.append(hits / k); rec.append(hits / n_test)
             results[name] = {f"precision@{k}": float(np.concatenate(prec).mean()),
                              f"recall@{k}": float(np.concatenate(rec).mean())}
+        self._svd_U = self._svd_V = None
         return results
 
     # ---- inference --------------------------------------------------------
