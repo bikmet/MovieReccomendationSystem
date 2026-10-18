@@ -34,3 +34,8 @@ export const recommendForNewUser = (movieIds, n = 12) =>
 
 export const recommendForUser = (userId, n = 12) =>
   request(`/recommendations/${userId}?n=${n}`);
+
+export const getHome = () => request("/home");
+
+export const getPosters = (ids) =>
+  request(`/posters?${ids.map((id) => `ids=${id}`).join("&")}`);

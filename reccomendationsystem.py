@@ -216,6 +216,13 @@ class MovieRecommender:
         out["score"] = scores
         return out
 
+    def popular(self, genre=None, limit=20):
+        """Most-liked movies overall, or within one genre. DataFrame(movieId, title, genres)."""
+        df = self.titles.loc[self.movie_ids[np.argsort(-self.pop)]]   # most liked first
+        if genre:
+            df = df[df["genres"].str.split("|").apply(lambda g: genre in g)]
+        return df.head(limit).reset_index()
+
     def search(self, query, limit=20):
         """Movies whose title contains `query` (case-insensitive), most popular first.
         Returns DataFrame(movieId, title, genres)."""

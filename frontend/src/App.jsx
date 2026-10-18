@@ -1,27 +1,66 @@
-import { useEffect, useState } from "react";
-import { recommendForNewUser, recommendForUser, searchMovies } from "./api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { getHome, getPosters, recommendForNewUser, recommendForUser, searchMovies } from "./api";
+import PosterCard from "./PosterCard";
+import Rail from "./Rail";
 
 const MAX_PICKS = 10;
 
-// "Matrix, The (1999)" -> { name: "The Matrix", year: "1999" }
-function formatTitle(raw) {
-  const m = raw.match(/^(.*) \((\d{4})\)$/);
-  let name = m ? m[1] : raw;
-  const article = name.match(/^(.*), (The|A|An)$/);
-  if (article) name = `${article[2]} ${article[1]}`;
-  return { name, year: m ? m[2] : "" };
-}
-
 export default function App() {
-  const [mode, setMode] = useState("new"); // "new" = pick movies, "user" = existing user id
+  const [home, setHome] = useState(null); // { rows: [{ title, movies }] }
+  const [homeError, setHomeError] = useState("");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [picked, setPicked] = useState([]);
-  const [userId, setUserId] = useState("");
-  const [recs, setRecs] = useState(null); // { movies, note }
+  const [recs, setRecs] = useState(null); // movies recommended from the picks
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [userId, setUserId] = useState("");
+  const [userRecs, setUserRecs] = useState(null); // { movies, note }
+  const [userLoading, setUserLoading] = useState(false);
+  const [userError, setUserError] = useState("");
+  const [posters, setPosters] = useState({}); // movieId -> poster url | null
+  const [postersOn, setPostersOn] = useState(true);
+  const asked = useRef(new Set()); // movieIds whose poster we've already requested
+
+  // Home page rows load once on startup.
+  const loadHome = useCallback(async () => {
+    setHomeError("");
+    try {
+      setHome(await getHome());
+    } catch (e) {
+      setHomeError(e.message);
+    }
+  }, []);
+  useEffect(() => {
+    loadHome();
+  }, [loadHome]);
+
+  // Any movie that appears anywhere on screen gets its poster fetched (once, in batches).
+  useEffect(() => {
+    if (!postersOn) return;
+    const all = [
+      ...(home?.rows.flatMap((r) => r.movies) ?? []),
+      ...results,
+      ...picked,
+      ...(recs ?? []),
+      ...(userRecs?.movies ?? []),
+    ];
+    const ids = [...new Set(all.map((m) => m.movieId))].filter((id) => !asked.current.has(id));
+    if (!ids.length) return;
+    ids.forEach((id) => asked.current.add(id));
+    (async () => {
+      for (let i = 0; i < ids.length; i += 50) {
+        try {
+          const data = await getPosters(ids.slice(i, i + 50));
+          setPostersOn(data.enabled);
+          setPosters((p) => ({ ...p, ...data.posters }));
+        } catch {
+          /* posters are optional: cards fall back to a placeholder */
+        }
+      }
+    })();
+  }, [home, results, picked, recs, userRecs, postersOn]);
 
   // Search as you type: wait 300 ms after the last keystroke, cancel stale requests.
   useEffect(() => {
@@ -35,7 +74,7 @@ export default function App() {
     const timer = setTimeout(async () => {
       setSearching(true);
       try {
-        setResults(await searchMovies(q, 8, ctrl.signal));
+        setResults(await searchMovies(q, 12, ctrl.signal));
         setError("");
       } catch (e) {
         if (e.name !== "AbortError") setError(e.message);
@@ -61,160 +100,161 @@ export default function App() {
     );
   }
 
-  const canSubmit = mode === "new" ? picked.length > 0 : /^\d+$/.test(userId.trim());
-
   async function getRecommendations() {
     setLoading(true);
     setError("");
     try {
-      if (mode === "new") {
-        const data = await recommendForNewUser(picked.map((m) => m.movieId));
-        setRecs({ movies: data.recommendations, note: "" });
-      } else {
-        const data = await recommendForUser(Number(userId));
-        setRecs({
-          movies: data.recommendations,
-          note: data.personalized
-            ? ""
-            : `User ${userId} isn't in the data, so these are the most popular movies instead.`,
-        });
-      }
+      const data = await recommendForNewUser(picked.map((m) => m.movieId));
+      setRecs(data.recommendations);
     } catch (e) {
       setError(e.message);
-      setRecs(null);
     } finally {
       setLoading(false);
     }
   }
 
+  async function getUserRecommendations() {
+    setUserLoading(true);
+    setUserError("");
+    try {
+      const data = await recommendForUser(Number(userId));
+      setUserRecs({
+        movies: data.recommendations,
+        note: data.personalized
+          ? ""
+          : `User ${userId} isn't in the data, so these are the most popular movies instead.`,
+      });
+    } catch (e) {
+      setUserError(e.message);
+    } finally {
+      setUserLoading(false);
+    }
+  }
+
+  const card = (movie, extra = {}) => (
+    <PosterCard
+      key={movie.movieId}
+      movie={movie}
+      poster={posters[movie.movieId]}
+      picked={isPicked(movie)}
+      onToggle={togglePick}
+      disabled={picked.length >= MAX_PICKS}
+      {...extra}
+    />
+  );
+
+  const q = query.trim();
+
   return (
     <div className="app">
-      <header>
+      <section className="hero">
         <h1>Next watch</h1>
-        <p>Pick a few movies you love and get a list of what to watch next.</p>
-      </header>
+        <p>Add movies you love with the + button, then get recommendations picked for your taste.</p>
+        <input
+          className="search"
+          type="search"
+          aria-label="Search for a movie"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search for a movie you like, like “matrix” or “toy story”"
+          autoComplete="off"
+        />
+        {!postersOn && (
+          <p className="status">Posters are off. Add TMDB_API_KEY to your .env file to show them.</p>
+        )}
+      </section>
 
-      <main>
-        <section className="panel" aria-label="Your taste">
-          <div className="segmented">
-            <button aria-pressed={mode === "new"} onClick={() => setMode("new")}>
-              Pick movies
-            </button>
-            <button aria-pressed={mode === "user"} onClick={() => setMode("user")}>
-              I have a user ID
-            </button>
-          </div>
+      {q &&
+        (searching && results.length === 0 ? (
+          <p className="status">Searching…</p>
+        ) : results.length === 0 ? (
+          <p className="status">No movies match “{q}”.</p>
+        ) : (
+          <Rail title={`Results for “${q}”`}>{results.map((m) => card(m))}</Rail>
+        ))}
 
-          {mode === "new" ? (
+      {picked.length > 0 ? (
+        <Rail
+          title={
             <>
-              <label htmlFor="search">Search for a movie you like</label>
-              <input
-                id="search"
-                type="search"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Try “matrix” or “toy story”"
-                autoComplete="off"
-              />
-              {query.trim() && (
-                <ul className="results">
-                  {searching && <li className="hint">Searching…</li>}
-                  {!searching && results.length === 0 && (
-                    <li className="hint">No movies match “{query.trim()}”.</li>
-                  )}
-                  {results.map((m) => {
-                    const { name, year } = formatTitle(m.title);
-                    return (
-                      <li key={m.movieId}>
-                        <button
-                          aria-pressed={isPicked(m)}
-                          onClick={() => togglePick(m)}
-                          disabled={!isPicked(m) && picked.length >= MAX_PICKS}
-                        >
-                          <span>
-                            {name} <span className="year">{year}</span>
-                          </span>
-                          <span className="action">{isPicked(m) ? "Added" : "Add"}</span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-
-              <h2>
-                Your picks <span className="count">{picked.length} of {MAX_PICKS}</span>
-              </h2>
-              {picked.length === 0 ? (
-                <p className="hint">Search above and add 3 to 5 movies for the best results.</p>
-              ) : (
-                <ul className="chips">
-                  {picked.map((m) => (
-                    <li key={m.movieId}>
-                      {formatTitle(m.title).name}
-                      <button
-                        aria-label={`Remove ${formatTitle(m.title).name}`}
-                        onClick={() => togglePick(m)}
-                      >
-                        ×
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              Your picks{" "}
+              <span className="count">
+                {picked.length} of {MAX_PICKS}
+              </span>
             </>
-          ) : (
-            <>
-              <label htmlFor="uid">User ID</label>
-              <input
-                id="uid"
-                inputMode="numeric"
-                value={userId}
-                onChange={(e) => setUserId(e.target.value)}
-                placeholder="For example 1"
-              />
-              <p className="hint">
-                Uses what that user rated highly in the dataset. Unknown IDs get popular movies.
-              </p>
-            </>
-          )}
+          }
+          action={
+            <button className="go" onClick={getRecommendations} disabled={loading}>
+              {loading ? "Finding movies…" : "Get recommendations"}
+            </button>
+          }
+        >
+          {picked.map((m) => card(m))}
+        </Rail>
+      ) : (
+        !q && <p className="status">Your picks will show up here. Add 3 to 5 movies for the best results.</p>
+      )}
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
 
-          <button className="go" onClick={getRecommendations} disabled={!canSubmit || loading}>
-            {loading ? "Finding movies…" : "Get recommendations"}
+      {recs && <Rail title="Recommended for you">{recs.map((m, i) => card(m, { rank: i + 1 }))}</Rail>}
+
+      <div className="browse">
+        {homeError ? (
+          <p className="error" role="alert">
+            {homeError} <button className="link" onClick={loadHome}>Try again</button>
+          </p>
+        ) : !home ? (
+          <p className="status">Loading movies…</p>
+        ) : (
+          home.rows.map((row) => (
+            <Rail key={row.title} title={row.title}>
+              {row.movies.map((m) => card(m))}
+            </Rail>
+          ))
+        )}
+      </div>
+
+      <section className="user">
+        <h2>Already have a user ID?</h2>
+        <p className="status">We'll use what that user rated highly in the dataset. Unknown IDs get popular movies.</p>
+        <div className="inline">
+          <input
+            aria-label="User ID"
+            inputMode="numeric"
+            value={userId}
+            onChange={(e) => setUserId(e.target.value)}
+            placeholder="User ID, for example 1"
+          />
+          <button
+            className="go"
+            onClick={getUserRecommendations}
+            disabled={!/^\d+$/.test(userId.trim()) || userLoading}
+          >
+            {userLoading ? "Finding movies…" : "Show recommendations"}
           </button>
-          {error && (
-            <p className="error" role="alert">
-              {error}
-            </p>
-          )}
-        </section>
+        </div>
+        {userError && (
+          <p className="error" role="alert">
+            {userError}
+          </p>
+        )}
+        {userRecs && (
+          <>
+            {userRecs.note && <p className="note">{userRecs.note}</p>}
+            <Rail title="Picked from your ratings">
+              {userRecs.movies.map((m, i) => card(m, { rank: i + 1 }))}
+            </Rail>
+          </>
+        )}
+      </section>
 
-        <section className="out" aria-live="polite" aria-label="Recommendations">
-          {recs ? (
-            <>
-              {recs.note && <p className="note">{recs.note}</p>}
-              <ol className="tickets">
-                {recs.movies.map((m, i) => {
-                  const { name, year } = formatTitle(m.title);
-                  return (
-                    <li className="ticket" key={m.movieId}>
-                      <span className="stub">{i + 1}</span>
-                      <div className="body">
-                        <h3>
-                          {name} <span className="year">{year}</span>
-                        </h3>
-                        <p>{m.genres.join(", ")}</p>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ol>
-            </>
-          ) : (
-            <p className="empty">Your recommendations will appear here.</p>
-          )}
-        </section>
-      </main>
+      {postersOn && (
+        <footer>This product uses the TMDB API but is not endorsed or certified by TMDB.</footer>
+      )}
     </div>
   );
 }
