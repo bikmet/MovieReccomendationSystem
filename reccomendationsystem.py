@@ -226,6 +226,35 @@ class MovieRecommender:
         pop = np.array([self.pop[self.movie_index[m]] for m in found.index])
         return found.iloc[np.argsort(-pop)[:limit]].reset_index()
 
+    def recommend_for_new_user(self, liked_movie_ids, n=10):
+        """Cold start: recommend for someone NOT in the training data, from a few movies
+        they say they like. Same two parts as recommend(), built on the fly:
+          - collaborative: "fold in" the user = solve one ALS user update against the
+            trained movie factors (no retraining needed)
+          - content: taste profile = average genre/tag vector of the liked movies
+        Returns DataFrame(movieId, title, genres, score)."""
+        idx = np.array(sorted({self.movie_index[m] for m in liked_movie_ids
+                               if m in self.movie_index}))
+        if idx.size == 0:
+            raise ValueError("None of the given movieIds are known")
+
+        Y = self.V[:, idx].T                                  # factors of the liked movies
+        A = (self.V @ self.V.T + (self.confidence - 1) * (Y.T @ Y)
+             + self.reg * np.eye(self.V.shape[0]))
+        b = self.confidence * Y.sum(axis=0)
+        user_vec = np.linalg.solve(A, b)                      # this user's ALS factors
+        cf = _zscore_rows((user_vec @ self.V)[None, :])
+
+        profile = normalize(sparse.csr_matrix(self.F[idx].sum(axis=0)))
+        content = _zscore_rows((profile @ self.F.T).toarray())
+
+        sc = (self.alpha * cf + (1 - self.alpha) * content)[0]
+        sc[idx] = -np.inf                                     # don't recommend what they picked
+        top = np.argsort(-sc)[:n]
+        out = self.titles.loc[self.movie_ids[top]].reset_index()
+        out["score"] = sc[top]
+        return out
+
     def save(self, path=MODEL_PATH):
         with open(path, "wb") as f:
             pickle.dump(self, f)

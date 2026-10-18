@@ -10,7 +10,7 @@ import os
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Importing from this module is also what lets pickle find the MovieRecommender class
 from reccomendationsystem import MODEL_PATH, load_recommender
@@ -35,6 +35,17 @@ class RecommendationResponse(BaseModel):
 class LikedResponse(BaseModel):
     userId: int
     liked: list[Movie]
+
+
+class NewUserRequest(BaseModel):                  # the JSON body the client POSTs
+    liked_movie_ids: list[int] = Field(..., min_length=1, max_length=50)
+    n: int = Field(10, ge=1, le=50)
+
+
+class NewUserResponse(BaseModel):
+    used_movie_ids: list[int]                     # ids the model recognised
+    ignored_movie_ids: list[int]                  # ids not in the dataset
+    recommendations: list[Movie]
 
 
 class HealthResponse(BaseModel):
@@ -132,3 +143,16 @@ def search_movies(
 ):
     """Find movies by title (case-insensitive), most popular first."""
     return to_movies(rec.search(q, limit), with_score=False)
+
+
+@app.post("/recommendations/new-user", response_model=NewUserResponse)
+def recommendations_new_user(body: NewUserRequest, rec=Depends(get_recommender)):
+    """Cold start: send a few movies you like, get recommendations (3-5+ picks work best)."""
+    ids = list(dict.fromkeys(body.liked_movie_ids))          # drop duplicates, keep order
+    used = [m for m in ids if m in rec.movie_index]
+    ignored = [m for m in ids if m not in rec.movie_index]
+    if not used:
+        raise HTTPException(status_code=400, detail="None of the given movie IDs exist")
+    df = rec.recommend_for_new_user(used, body.n)
+    return NewUserResponse(used_movie_ids=used, ignored_movie_ids=ignored,
+                           recommendations=to_movies(df))
